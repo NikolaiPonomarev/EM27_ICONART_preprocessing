@@ -36,7 +36,7 @@ def linear_extrapolate(x, xp, fp):
         y[mask_top] = fp[-1] + slope_top * (x[mask_top] - xp[-1])
     return y
 
-def get_file_pairs(model_dir, obs_dir, obs_v='*V009*'):
+def get_file_pairs(model_dir, obs_dir, obs_v='*V014*'):
     model_files = sorted(glob.glob(os.path.join(model_dir, '*.nc')))
     obs_files = sorted(glob.glob(os.path.join(obs_dir, obs_v + '.nc')))
 
@@ -65,7 +65,7 @@ def get_file_pairs(model_dir, obs_dir, obs_v='*V009*'):
         dd   = yyyymmdd[6:8]
 
         # Convert to DDMMYY
-        ddmmyy = dd + mm + yyyy[2:]
+        ddmmyy = yyyy[2:] + mm + dd
 
         # Match with obs dates
         for of, d_obs in obs_dates.items():
@@ -141,7 +141,7 @@ def hor_interp(arr, station):
 
 
 
-file_pairs = get_file_pairs(model_dir, obs_dir, obs_v='*V009*')
+file_pairs = get_file_pairs(model_dir, obs_dir, obs_v='*V014*')
 
 # Precompute station info from the first obs file
 
@@ -236,6 +236,7 @@ def debug_plot_stepwise(
     fname = os.path.join(outdir, f"debug_{pid}_{timestamp}_{comp_name}.png")
     plt.savefig(fname)
     plt.close()
+    print(fname)
 
 
 def process_file_pair_full(file_pair, stations, min_nobs=7):
@@ -279,7 +280,7 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
 
     print('Model topo', mod_topo_hor[-1], 'Observation topo ', station.topo_obs)
     # ---------- Vertical interpolation ----------
-    avk_heights_total = station.avk_heights_m + station.height_agl
+    avk_heights_total = station.avk_heights_m  - station.topo_obs#+ station.height_agl
     # ---------- no extrapolation ----------
     # cnc_vert = np.interp(avk_heights_total, z_ifc_hor[::-1], cnc_hor_total[::-1],
     #                      left=np.nan, right=np.nan)
@@ -330,20 +331,20 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
     print('Avk heights', station.avk_heights_m)
     print('Avk agl', station.height_agl)
 
-    # DEBUG PLOT
-    debug_plot_stepwise(
-        z_model = z_ifc_hor[::-1],
-        cnc_model = cnc_hor_total[::-1],
-        z_interp = avk_heights_total,
-        cnc_interp = cnc_vert,
-        avk = AVK_avg,
-        pid = pid,
-        timestamp = str(model_time),
+    # # DEBUG PLOT
+    # debug_plot_stepwise(
+    #     z_model = z_ifc_hor[::-1],
+    #     cnc_model = cnc_hor_total[::-1],
+    #     z_interp = avk_heights_total,
+    #     cnc_interp = cnc_vert,
+    #     avk = AVK_avg,
+    #     pid = pid,
+    #     timestamp = str(model_time),
 
-        cnc_model_comp = cnc_hor_TR[::-1],
-        cnc_interp_comp = cnc_vert_TR,
-        comp_name = "ANTHR"
-    )
+    #     cnc_model_comp = cnc_hor_TR[::-1],
+    #     cnc_interp_comp = cnc_vert_TR,
+    #     comp_name = "ANTHR"
+    # )
 
     # Close datasets
     ds_mod.close()
@@ -367,7 +368,7 @@ args = [(fp, stations) for fp in file_pairs]
 
 with Pool(4) as pool:
     all_results = pool.starmap(process_file_pair_full, args)
-process_file_pair_full(args[40][0], args[40][1])
+# process_file_pair_full(args[40][0], args[40][1])
 # Build sorted unique times and pids
 times = sorted(list({d['time'] for d in all_results}))
 pids  = sorted(list({d['pid']  for d in all_results}))
