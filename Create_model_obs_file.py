@@ -6,11 +6,13 @@ import math
 from multiprocessing import Pool
 import re 
 from collections import OrderedDict
+import matplotlib.pyplot as plt
+import pandas as pd
 # ---------- Paths ----------
 obs_dir = '/exports/geos.ed.ac.uk/palmer_group/managed/nponomar/edatmo/data-root/L2/by-product/EM27/total_column_qc/'
-model_dir = '/exports/geos.ed.ac.uk/palmer_group/nponomar/icon_runs/work/VPRM_EU_ERA5_22/202501_01_00_0_2160/icon/output/'
+model_dir = '/exports/geos.ed.ac.uk/palmer_group/nponomar/icon_runs/work/VPRM_EU_ERA5_22/202504_01_00_0_2183/icon/output/'
 grid_file = '/home/nponomar/icon_Edinburgh/icon_europe_DOM01.nc'
-
+default_obs_version = '*V014*'
 outpath = '/exports/geos.ed.ac.uk/palmer_group/nponomar/EM27/EM27_ICONART_preprocessing/'
 # ---------- Load model grid ----------
 ds_grid = xr.open_dataset(grid_file)
@@ -36,7 +38,7 @@ def linear_extrapolate(x, xp, fp):
         y[mask_top] = fp[-1] + slope_top * (x[mask_top] - xp[-1])
     return y
 
-def get_file_pairs(model_dir, obs_dir, obs_v='*V014*'):
+def get_file_pairs(model_dir, obs_dir, obs_v=default_obs_version):
     model_files = sorted(glob.glob(os.path.join(model_dir, '*.nc')))
     obs_files = sorted(glob.glob(os.path.join(obs_dir, obs_v + '.nc')))
 
@@ -129,7 +131,13 @@ class Station:
         # ---------- Vertical interpolation ----------
         self.avk_heights_m = ds_obs.height_prior.values * 1000  # km → m
         self.topo_obs = ds_obs.altim.values - self.height_agl
-        self.topo_obs = self.topo_obs[~np.isnan(self.topo_obs)][0]
+        if np.any(~np.isnan(self.topo_obs)):
+            self.topo_obs = self.topo_obs[~np.isnan(self.topo_obs)][0]
+            self.valid = True
+        else:
+            print('!!!!!!!!!!', self.pid, ds_obs.altim,  ds_obs.station_height_above_ground)
+            self.topo_obs = 0
+            self.valid = False
         ds_obs.close()
 # ---------- Horizontal interpolation ----------
 def hor_interp(arr, station):
@@ -146,7 +154,18 @@ file_pairs = get_file_pairs(model_dir, obs_dir, obs_v='*V014*')
 # Precompute station info from the first obs file
 
 unique_obs_files = get_unique_obs_files_from_pairs(file_pairs)
-stations = {get_pid_from_filename(f): Station(f, lons_km, lats_km) for f in unique_obs_files}
+# stations = {get_pid_from_filename(f): Station(f, lons_km, lats_km) for f in unique_obs_files}
+stations = {}
+for f in unique_obs_files:
+    s = Station(f, lons_km, lats_km)
+    if s.valid:
+        stations[s.pid] = s
+    else:
+        print(f"IGNORED STATION: {f}")
+
+DEBUG_PID = "JCMB_SN217"
+DEBUG_ONCE = True
+DEBUG_DONE = False
 
 def linear_extrapolate(x, xp, fp):
     """Interpolate with linear extrapolation at both ends using two nearest points."""
@@ -251,7 +270,11 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
     """
     
     model_file, obs_file = file_pair
+
     pid = get_pid_from_filename(obs_file)
+    if pid not in stations:
+        print(f"Skipping {pid}: no valid Station info")
+        return None
     station = stations[pid]
     print('Processing', model_file, obs_file, pid)
     # Open datasets
@@ -265,14 +288,14 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
               ds_mod.qr[0].values + ds_mod.qs[0].values + ds_mod.qg[0].values
     model_layers = ds_mod.z_ifc.values[1:, :]
     TRCO2 = ds_mod.TRCO2_Anthropogenic_chemtr[0].values * factor / (1 - q_total)
-    BGCO2 = ds_mod.TRCO2_BG_chemtr[0].values * factor / (1 - q_total)
+    TRCO2_BG = ds_mod.TRCO2_BG_chemtr[0].values * factor / (1 - q_total)
     RA_CO2 = ds_mod.CO2_RA[0].values * factor / (1 - q_total)
     GPP_CO2 = ds_mod.CO2_GPP[0].values * factor / (1 - q_total)
-    cnc_total = TRCO2 + BGCO2 + RA_CO2 - GPP_CO2
+    cnc_total = TRCO2 + TRCO2_BG + RA_CO2 - GPP_CO2
 
     cnc_hor_total = hor_interp(cnc_total, station)
     cnc_hor_TR = hor_interp(TRCO2, station)
-    cnc_hor_BG = hor_interp(BGCO2, station)
+    cnc_hor_TR_BG = hor_interp(TRCO2_BG, station)
     cnc_hor_RA = hor_interp(RA_CO2, station)
     cnc_hor_GPP = hor_interp(GPP_CO2, station)
     z_ifc_hor = hor_interp(z_ifc, station)
@@ -294,7 +317,7 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
     #                          left=np.nan, right=np.nan)
     cnc_vert = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_total[::-1])
     cnc_vert_TR = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR[::-1])
-    cnc_vert_BG = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_BG[::-1])
+    cnc_vert_BG = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR_BG[::-1])
     cnc_vert_RA = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_RA[::-1])
     cnc_vert_GPP = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_GPP[::-1])
 
@@ -324,27 +347,54 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
     XCO2_mod_RA = np.nansum(cnc_vert_RA * AVK_avg) / np.sum(AVK_avg)
     XCO2_mod_GPP = np.nansum(cnc_vert_GPP * AVK_avg) / np.sum(AVK_avg)
 
-    print("Model levels (z_ifc_hor):", z_ifc_hor[::-1])
-    print("AVK heights total:", avk_heights_total)
-    print("Model TR concentration:", cnc_hor_TR[::-1])
-    print("Model interpolated TR concentration:", cnc_vert_TR)
-    print('Avk heights', station.avk_heights_m)
-    print('Avk agl', station.height_agl)
+    # print("Model levels (z_ifc_hor):", z_ifc_hor[::-1])
+    # print("AVK heights total:", avk_heights_total)
+    # print("Model TR concentration:", cnc_hor_TR[::-1])
+    # print("Model interpolated TR concentration:", cnc_vert_TR)
+    # print('Avk heights', station.avk_heights_m)
+    # print('Avk agl', station.height_agl)
 
-    # # DEBUG PLOT
-    # debug_plot_stepwise(
-    #     z_model = z_ifc_hor[::-1],
-    #     cnc_model = cnc_hor_total[::-1],
-    #     z_interp = avk_heights_total,
-    #     cnc_interp = cnc_vert,
-    #     avk = AVK_avg,
-    #     pid = pid,
-    #     timestamp = str(model_time),
+    # if np.any(~np.isnan(XCO2_mod)):
+    #     debug_plot_stepwise(
+    #         z_model = z_ifc_hor[::-1],
+    #         cnc_model = cnc_hor_total[::-1],
+    #         z_interp = avk_heights_total,
+    #         cnc_interp = cnc_vert,
+    #         avk = AVK_avg,
+    #         pid = pid,
+    #         timestamp = str(model_time),
 
-    #     cnc_model_comp = cnc_hor_TR[::-1],
-    #     cnc_interp_comp = cnc_vert_TR,
-    #     comp_name = "ANTHR"
-    # )
+    #         cnc_model_comp = cnc_hor_TR[::-1],
+    #         cnc_interp_comp = cnc_vert_TR,
+    #         comp_name = "Anthr"
+    #     )
+    #     debug_plot_stepwise(
+    #         z_model = z_ifc_hor[::-1],
+    #         cnc_model = cnc_hor_total[::-1],
+    #         z_interp = avk_heights_total,
+    #         cnc_interp = cnc_vert,
+    #         avk = AVK_avg,
+    #         pid = pid,
+    #         timestamp = str(model_time),
+
+    #         cnc_model_comp = cnc_hor_total[::-1],
+    #         cnc_interp_comp = cnc_vert,
+    #         comp_name = "Total"
+    #     )
+    #     debug_plot_stepwise(
+    #         z_model = z_ifc_hor[::-1],
+    #         cnc_model = cnc_hor_total[::-1],
+    #         z_interp = avk_heights_total,
+    #         cnc_interp = cnc_vert,
+    #         avk = AVK_avg,
+    #         pid = pid,
+    #         timestamp = str(model_time),
+
+    #         cnc_model_comp = cnc_hor_TR_BG [::-1],
+    #         cnc_interp_comp = cnc_vert_BG,
+    #         comp_name = "BG"
+    #     )
+
 
     # Close datasets
     ds_mod.close()
@@ -368,10 +418,18 @@ args = [(fp, stations) for fp in file_pairs]
 
 with Pool(4) as pool:
     all_results = pool.starmap(process_file_pair_full, args)
-# process_file_pair_full(args[40][0], args[40][1])
+# for i in range(40):
+#     print(i, args[i][0], args[i][1])
+#     process_file_pair_full(args[i][0], args[i][1])
 # Build sorted unique times and pids
-times = sorted(list({d['time'] for d in all_results}))
-pids  = sorted(list({d['pid']  for d in all_results}))
+# times = sorted(list({d['time'] for d in all_results}))
+# pids  = sorted(list({d['pid']  for d in all_results}))
+# Filter out None results
+all_results_valid = [d for d in all_results if d is not None and 'time' in d and 'pid' in d]
+
+# Build sorted unique times and pids from valid results only
+times = sorted({d['time'] for d in all_results_valid})
+pids  = sorted({d['pid']  for d in all_results_valid})
 
 NT = len(times)
 NS = len(pids)
@@ -379,6 +437,9 @@ NS = len(pids)
 # Prepare index maps
 time_idx = {t: i for i, t in enumerate(times)}
 pid_idx  = {p: i for i, p in enumerate(pids)}
+
+
+
 
 # Initialize arrays (much cleaner: only store arrays!)
 data_dict = {
@@ -393,7 +454,8 @@ data_dict = {
 }
 
 # Fill arrays
-for d in all_results:
+# for d in all_results:
+for d in all_results_valid:
     ti = time_idx[d['time']]
     si = pid_idx[d['pid']]
     data_dict['XCO2_obs'    ][ti, si] = d['XCO2_obs']
@@ -419,7 +481,7 @@ t1 = np.datetime_as_string(ds.time.max().values, unit='m')
 t0 = t0.replace('-', '').replace(':', '')
 t1 = t1.replace('-', '').replace(':', '')
 
-outfile = outpath + f"processed_EM27_ICONART_{t0}_{t1}.nc"
+outfile = outpath + f"processed_EM27_ICONART_{t0}_{t1}_modBG.nc"
 
 print("Writing:", outfile)
 ds.to_netcdf(outfile)
@@ -427,11 +489,9 @@ ds.to_netcdf(outfile)
 
 
 
-import matplotlib.pyplot as plt
-import numpy as np
-import pandas as pd
 
-def plot_hourly_month(ds, pid, year, month, outdir=outpath + "plots_above_model_topo"):
+
+def plot_hourly_month(ds, pid, year, month, outdir=outpath + "Mod_BG"):
     os.makedirs(outdir, exist_ok=True)
 
     # Select PID and month
@@ -466,15 +526,17 @@ def plot_hourly_month(ds, pid, year, month, outdir=outpath + "plots_above_model_
 
     stats_dict = {
         "OBS": stats(obs),
+        "OBS_enchancement": stats(obs-bg),
         "MOD": stats(mod),
         "BG": stats(bg),
         "Anth": stats(anth),
         "RA": stats(ra),
         "GPP": stats(gpp)
+        
     }
 
     plt.figure(figsize=(12,5))
-    plt.plot(times, obs, 'k-', lw=1.5, label=f"OBS ({stats_dict['OBS']})")
+    plt.plot(times, obs, 'k-', lw=1.5, label=f"OBS ({stats_dict['OBS']} / stats)")
     plt.plot(times, mod, 'r-', lw=1.5, label=f"MOD ({stats_dict['MOD']})")
 
     # Stacked shaded areas
@@ -483,7 +545,7 @@ def plot_hourly_month(ds, pid, year, month, outdir=outpath + "plots_above_model_
     plt.fill_between(times, bg+anth, bg+anth+ra, color='olive', alpha=0.5, label=f"RA ({stats_dict['RA']})")
     plt.fill_between(times, bg+anth+ra, bg+anth+ra+gpp, color='lime', alpha=0.5, label=f"GPP ({stats_dict['GPP']})")
 
-    plt.title(f"Hourly XCO2 - {pid} {year}-{month:02d} | Model topo: {model_topo:.1f} m, Obs topo: {obs_topo:.1f} m")
+    plt.title(f"Hourly XCO2 - {pid} {year}-{month:02d} | Model topo: {model_topo:.1f} m, Obs topo: {obs_topo:.1f} m | Obs. enchancement {stats_dict['OBS_enchancement']}")
     plt.ylabel("XCO2 [ppm]")
     plt.ylim(bottom=410)
     plt.xlabel("Time")
@@ -524,7 +586,7 @@ def compute_monthly_metrics(ds):
             sel = ds.sel(pid=pid)
             time_sel = (sel.time.dt.year == year) & (sel.time.dt.month == month)
             d = sel.sel(time=time_sel)
-            obs = d["XCO2_obs"].values
+            obs = d["XCO2_obs"].values #- d['XCO2_mod_BG'].values
             mod = d["XCO2_mod"].values
 
             mask = ~np.isnan(obs) & ~np.isnan(mod)
@@ -618,7 +680,7 @@ def plot_metrics_site(metrics_site_avg, metrics_site_full, outdir):
     axes[3].set_ylabel('Mean XCO2 [ppm]')
     axes[3].set_title('Mean XCO2 per site')
     axes[3].set_xticks(x)
-    axes[3].set_ylim(bottom=410)
+    # axes[3].set_ylim(bottom=410)
     axes[3].set_xticklabels(pids, rotation=45)
     axes[3].legend()
     # annotate_bars(axes[3], mean_obs)
@@ -670,7 +732,7 @@ def plot_metrics_month(metrics_month_avg, metrics_month_full, outdir):
     axes[3].set_title('Mean XCO2 per site')
     axes[3].set_xticks(x)
     axes[3].set_xticklabels(labels, rotation=45)
-    axes[3].set_ylim(bottom=410)  # start y-axis from 410 ppm
+    # axes[3].set_ylim(bottom=410)  # start y-axis from 410 ppm
     axes[3].legend()
     # annotate_bars(axes[3], mean_obs)
     # annotate_bars(axes[3], mean_mod)
@@ -682,5 +744,5 @@ def plot_metrics_month(metrics_month_avg, metrics_month_full, outdir):
 
 # --- Example call ---
 metrics_site_avg, metrics_month_avg, metrics_site_full, metrics_month_full = compute_monthly_metrics(ds)
-plot_metrics_site(metrics_site_avg, metrics_site_full, outdir=outpath + "plots_above_model_topo/stats/")
-plot_metrics_month(metrics_month_avg, metrics_month_full, outdir=outpath + "plots_above_model_topo/stats/")
+plot_metrics_site(metrics_site_avg, metrics_site_full, outdir=outpath + "Obs_BG/stats/")
+plot_metrics_month(metrics_month_avg, metrics_month_full, outdir=outpath + "Obs_BG/stats/")
