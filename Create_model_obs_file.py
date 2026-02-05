@@ -87,19 +87,30 @@ def get_pid_from_filename(obs_file):
 
     return m.group(1)
 
-def get_unique_obs_files_from_pairs(file_pairs):
-    unique_files = OrderedDict()
-    
+def get_first_valid_station_per_pid(file_pairs):
+    """
+    Return one valid Station object per PID.
+    """
+    pid_to_station = OrderedDict()
+    pid_files = defaultdict(list)
+
+    # Group obs files by PID
     for _, obs_file in file_pairs:
         pid = get_pid_from_filename(obs_file)
-        if pid is None:
-            continue
-        if pid not in unique_files:
-            unique_files[pid] = obs_file
+        if pid is not None:
+            pid_files[pid].append(obs_file)
 
-    return list(unique_files.values())
+    # Try each obs file until a valid one is found
+    for pid, files in pid_files.items():
+        for f in files:
+            s = Station(f, lons_km, lats_km)
+            if s.valid:
+                pid_to_station[pid] = s
+                break
+        else:
+            print(f"WARNING: No valid obs file found for PID {pid}")
 
-
+    return pid_to_station
 
 class Station:
     """
@@ -150,19 +161,10 @@ def hor_interp(arr, station):
 
 
 
-file_pairs = get_file_pairs(model_dir, obs_dir, obs_v='*V014*')
+file_pairs = get_file_pairs(model_dir, obs_dir, obs_v=default_obs_version)
 
 # Precompute station info from the first obs file
-
-unique_obs_files = get_unique_obs_files_from_pairs(file_pairs)
-# stations = {get_pid_from_filename(f): Station(f, lons_km, lats_km) for f in unique_obs_files}
-stations = {}
-for f in unique_obs_files:
-    s = Station(f, lons_km, lats_km)
-    if s.valid:
-        stations[s.pid] = s
-    else:
-        print(f"IGNORED STATION: {f}")
+stations = get_first_valid_station_per_pid(file_pairs)
 
 
 def linear_extrapolate(x, xp, fp):
