@@ -548,7 +548,7 @@ ds.to_netcdf(outfile)
 
 
 
-def plot_hourly_month(ds, pid, year, month, outdir=outpath + "Mod_BG"):
+def plot_hourly_month(ds, pid, year, month, outdir=outpath + "Mod_Prior"):
     os.makedirs(outdir, exist_ok=True)
 
     # Select PID and month
@@ -593,7 +593,7 @@ def plot_hourly_month(ds, pid, year, month, outdir=outpath + "Mod_BG"):
     }
 
     plt.figure(figsize=(12,5))
-    plt.plot(times, obs, 'k-', lw=1.5, label=f"OBS ({stats_dict['OBS']} / stats)")
+    plt.plot(times, obs, 'k-o', lw=1.5, markersize=3.5, mfc='none', label=f"OBS ({stats_dict['OBS']})")
     plt.plot(times, mod, 'r-', lw=1.5, label=f"MOD ({stats_dict['MOD']})")
 
     # Stacked shaded areas
@@ -630,6 +630,8 @@ def compute_monthly_metrics(ds):
     metrics_site_full = {}
     metrics_month = {}
     metrics_month_full = {}
+    n_obs_site = {}
+    n_obs_month = {}
 
     all_times = pd.to_datetime(ds.time.values)
     months = sorted(set((t.year, t.month) for t in all_times))
@@ -637,7 +639,7 @@ def compute_monthly_metrics(ds):
     for pid in ds.pid.values:
         metrics_site[pid] = {"bias": [], "rmse": [], "corr": [], "mean": []}
         metrics_site_full[pid] = {"mean_obs": [], "mean_mod": []}
-
+        n_obs_site[pid] = []
     for year, month in months:
         for pid in ds.pid.values:
             sel = ds.sel(pid=pid)
@@ -647,6 +649,7 @@ def compute_monthly_metrics(ds):
             mod = d["XCO2_mod"].values
 
             mask = ~np.isnan(obs) & ~np.isnan(mod)
+            n_valid = np.sum(mask)
             if np.sum(mask) == 0:
                 continue
 
@@ -673,7 +676,7 @@ def compute_monthly_metrics(ds):
             metrics_site[pid]["mean"].append(mean_obs)
             metrics_site_full[pid]["mean_obs"].append(mean_obs)
             metrics_site_full[pid]["mean_mod"].append(mean_mod)
-
+            n_obs_site[pid].append(n_valid)
             # Save per month
             metrics_month.setdefault((year, month), {"bias": [], "rmse": [], "corr": [], "mean": []})
             metrics_month_full.setdefault((year, month), {"mean_obs": [], "mean_mod": []})
@@ -682,7 +685,7 @@ def compute_monthly_metrics(ds):
             metrics_month[(year, month)]["rmse"].append(crmse)
             metrics_month[(year, month)]["corr"].append(corr)
             metrics_month[(year, month)]["mean"].append(mean_obs)
-
+            n_obs_month.setdefault((year, month), []).append(n_valid)
             metrics_month_full[(year, month)]["mean_obs"].append(mean_obs)
             metrics_month_full[(year, month)]["mean_mod"].append(mean_mod)
 
@@ -690,7 +693,7 @@ def compute_monthly_metrics(ds):
     metrics_site_avg = {pid: {k: np.nanmean(v) for k, v in metrics_site[pid].items()} for pid in metrics_site}
     metrics_month_avg = {m: {k: np.nanmean(v) for k, v in metrics_month[m].items()} for m in metrics_month}
 
-    return metrics_site_avg, metrics_month_avg, metrics_site_full, metrics_month_full
+    return metrics_site_avg, metrics_month_avg, metrics_site_full, metrics_month_full, n_obs_site, n_obs_month
 
 
 def annotate_bars(ax, values):
@@ -698,7 +701,7 @@ def annotate_bars(ax, values):
         ax.text(i, v + 0.01 * max(values), f"{v:.2f}", ha='center', va='bottom', fontsize=9)
 
 
-def plot_metrics_site(metrics_site_avg, metrics_site_full, outdir):
+def plot_metrics_site(metrics_site_avg, metrics_site_full, n_obs_site, outdir):
     """Plot metrics per site with Bias, CRMSE, Correlation, and Mean OBS/MOD."""
     os.makedirs(outdir, exist_ok=True)
     pids = list(metrics_site_avg.keys())
@@ -732,12 +735,15 @@ def plot_metrics_site(metrics_site_avg, metrics_site_full, outdir):
     axes[2].set_title(f'Correlation per site (mean={np.nanmean(corr):.2f})')
     # annotate_bars(axes[2], corr)
 
-    axes[3].bar(x - width/2, mean_obs, width, label=f'OBS (mean={overall_obs_mean:.2f})', alpha=0.8, color='black')
-    axes[3].bar(x + width/2, mean_mod, width, label=f'MOD (mean={overall_mod_mean:.2f})', alpha=0.8, color='red')
+    axes[3].bar(x - width/2, mean_obs, width, label=f'OBS (mean={overall_obs_mean:.3f})', alpha=0.8, color='black')
+    axes[3].bar(x + width/2, mean_mod, width, label=f'MOD (mean={overall_mod_mean:.3f})', alpha=0.8, color='red')
     axes[3].set_ylabel('Mean XCO2 [ppm]')
     axes[3].set_title('Mean XCO2 per site')
     axes[3].set_xticks(x)
-    # axes[3].set_ylim(bottom=410)
+    for i, pid in enumerate(pids):
+        n_obs = sum(n_obs_site[pid])
+        axes[3].text(i - width/2, mean_obs[i] + 0.5, f"{n_obs}", ha='center', va='bottom', fontsize=9, color='blue')
+    axes[3].set_ylim(bottom=415)
     axes[3].set_xticklabels(pids, rotation=45)
     axes[3].legend()
     # annotate_bars(axes[3], mean_obs)
@@ -748,7 +754,7 @@ def plot_metrics_site(metrics_site_avg, metrics_site_full, outdir):
     plt.close()
 
 
-def plot_metrics_month(metrics_month_avg, metrics_month_full, outdir):
+def plot_metrics_month(metrics_month_avg, metrics_month_full, n_obs_month, outdir):
     """Plot metrics per month with Bias, CRMSE, Correlation, and Mean OBS/MOD."""
     os.makedirs(outdir, exist_ok=True)
     months = sorted(metrics_month_avg.keys())
@@ -782,14 +788,17 @@ def plot_metrics_month(metrics_month_avg, metrics_month_full, outdir):
     axes[2].set_ylabel('Pearson r')
     axes[2].set_title(f'Correlation per month (mean={np.nanmean(corr):.2f})')
     # annotate_bars(axes[2], corr)
-
-    axes[3].bar(x - width/2, mean_obs, width, label=f'OBS (mean={overall_obs_mean:.2f})', alpha=0.8, color='black')
-    axes[3].bar(x + width/2, mean_mod, width, label=f'MOD (mean={overall_mod_mean:.2f})', alpha=0.8, color='red')
+    print('Obs:', overall_obs_mean, 'Mod:', overall_mod_mean)
+    axes[3].bar(x - width/2, mean_obs, width, label=f'OBS (mean={overall_obs_mean:.3f})', alpha=0.8, color='black')
+    axes[3].bar(x + width/2, mean_mod, width, label=f'MOD (mean={overall_mod_mean:.3f})', alpha=0.8, color='red')
     axes[3].set_ylabel('Mean XCO2 [ppm]')
     axes[3].set_title('Mean XCO2 per site')
     axes[3].set_xticks(x)
     axes[3].set_xticklabels(labels, rotation=45)
-    # axes[3].set_ylim(bottom=410)  # start y-axis from 410 ppm
+    for i, m in enumerate(months):
+        n_obs = sum(n_obs_month[m])
+        axes[3].text(i - width/2, mean_obs[i] + 0.5, f"{n_obs}", ha='center', va='bottom', fontsize=9, color='blue')
+    axes[3].set_ylim(bottom=415)  # start y-axis from 410 ppm
     axes[3].legend()
     # annotate_bars(axes[3], mean_obs)
     # annotate_bars(axes[3], mean_mod)
@@ -800,6 +809,6 @@ def plot_metrics_month(metrics_month_avg, metrics_month_full, outdir):
 
 
 # --- Example call ---
-metrics_site_avg, metrics_month_avg, metrics_site_full, metrics_month_full = compute_monthly_metrics(ds)
-plot_metrics_site(metrics_site_avg, metrics_site_full, outdir=outpath + "Obs_BG/stats/")
-plot_metrics_month(metrics_month_avg, metrics_month_full, outdir=outpath + "Obs_BG/stats/")
+metrics_site_avg, metrics_month_avg, metrics_site_full, metrics_month_full, n_obs_site, n_obs_month = compute_monthly_metrics(ds)
+plot_metrics_site(metrics_site_avg, metrics_site_full, n_obs_site, outdir=outpath + "Mod_Prior/stats/")
+plot_metrics_month(metrics_month_avg, metrics_month_full, n_obs_month, outdir=outpath + "Mod_Prior/stats/")
