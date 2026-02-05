@@ -466,7 +466,23 @@ with Pool(4) as pool:
 # times = sorted(list({d['time'] for d in all_results}))
 # pids  = sorted(list({d['pid']  for d in all_results}))
 # Filter out None results
-all_results_valid = [d for d in all_results if d is not None and 'time' in d and 'pid' in d]
+all_results_valid = [d for d in all_results if isinstance(d, dict) and 'time' in d and 'pid' in d]
+# Collect all failed results
+all_results_failed = [d for d in all_results if isinstance(d, tuple)]
+
+# Group by failure reason
+fail_summary = defaultdict(list)
+for fail in all_results_failed:
+    reason = fail[0]
+    info = fail[1]
+    fail_summary[reason].append(info)
+
+# Now printing works:
+print("=== Failed case summary ===")
+for reason, entries in fail_summary.items():
+    print(f"Due to {reason}: {len(entries)} failures")
+    for e in entries[:3]:
+        print("E.g. PID:", e['pid'], "| Model:", e['model_file'], "| Obs:", e['obs_file'])
 
 # Build sorted unique times and pids from valid results only
 times = sorted({d['time'] for d in all_results_valid})
