@@ -27,17 +27,6 @@ lons_km = np.array([x*math.cos(lats_rad[ix])*len_factor_lon for ix, x in enumera
 lats_km = np.array([x*len_factor_lat for x in lats_deg])
 
 # ---------- Helper Functions ----------
-def linear_extrapolate(x, xp, fp):
-    y = np.interp(x, xp, fp)
-    mask_bottom = x < xp[0]
-    if np.any(mask_bottom):
-        slope_bottom = (fp[1] - fp[0]) / (xp[1] - xp[0])
-        y[mask_bottom] = fp[0] + slope_bottom * (x[mask_bottom] - xp[0])
-    mask_top = x > xp[-1]
-    if np.any(mask_top):
-        slope_top = (fp[-1] - fp[-2]) / (xp[-1] - xp[-2])
-        y[mask_top] = fp[-1] + slope_top * (x[mask_top] - xp[-1])
-    return y
 
 def get_file_pairs(model_dir, obs_dir, obs_v=default_obs_version):
     model_files = sorted(glob.glob(os.path.join(model_dir, '*.nc')))
