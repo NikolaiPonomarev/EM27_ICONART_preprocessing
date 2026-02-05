@@ -167,34 +167,74 @@ file_pairs = get_file_pairs(model_dir, obs_dir, obs_v=default_obs_version)
 stations = get_first_valid_station_per_pid(file_pairs)
 
 
-def linear_extrapolate(x, xp, fp):
-    """Interpolate with linear extrapolation at both ends using two nearest points."""
-    # numpy interp for inner points
-    y = np.interp(x, xp, fp)
-    
-    # Bottom linear extrapolation
-    mask_bottom = x < xp[0]
+def linear_extrapolate(avk_heights, z_model, cnc_model, cnc_prior, is_component=False):
+    """
+    Interpolate CO2 profile to retrieval heights:
+      - Bottom, Below model layer heights: constant (lowest model layer)
+      - Mid, In range with model layer heights: linear interpolation
+      - Top, Above model layer heights: use prior profile
+    """
+    y = np.empty_like(avk_heights)
+
+    # Bottom: constant
+    mask_bottom = avk_heights < z_model[0]
+    y[mask_bottom] = cnc_model[0]
+
+    # Middle: linear interpolation (between model min and max)
+    mask_middle = (avk_heights >= z_model[0]) & (avk_heights <= z_model[-1])
+    y[mask_middle] = np.interp(avk_heights[mask_middle], z_model, cnc_model)
+
+    # Top: use prior
+    mask_top = avk_heights > z_model[-1]
+    if is_component:#linearly extrapolate component profiles, their values are only relevant near the surface
+        slope_top = (cnc_model[-1] - cnc_model[-2]) / (z_model[-1] - z_model[-2])
+        y[mask_top] = cnc_model[-1] + slope_top * (avk_heights[mask_top] - z_model[-1])
+    else:#for total profile use prior at the top
+        y[mask_top] = cnc_prior[mask_top]
+
+    return y
+
+
+def interp_rho_exp(avk_heights, z_model, rho_model, Nfit=5):
+    """
+    Interpolate density profile to retrieval heights:
+      - Bottom: constant (lowest model layer)
+      - Middle: linear interpolation
+      - Top: exponential fit to top Nfit layers
+    """
+    y = np.empty_like(avk_heights)
+
+    # Bottom: constant
+    mask_bottom = avk_heights < z_model[0]
     if np.any(mask_bottom):
-        slope_bottom = (fp[1] - fp[0]) / (xp[1] - xp[0])
-        y[mask_bottom] = fp[0] + slope_bottom * (x[mask_bottom] - xp[0])
-    
-    # Top linear extrapolation
-    mask_top = x > xp[-1]
+        y[mask_bottom] = rho_model[0]
+
+    # Middle: linear interpolation
+    mask_middle = (avk_heights >= z_model[0]) & (avk_heights <= z_model[-1])
+    y[mask_middle] = np.interp(avk_heights[mask_middle], z_model, rho_model)
+
+    # Top: exponential fit
+    mask_top = avk_heights > z_model[-1]
+    def rho_exp(z, rho0, H):
+            return rho0 * np.exp(-(z - z_fit[0]) / H)
     if np.any(mask_top):
-        slope_top = (fp[-1] - fp[-2]) / (xp[-1] - xp[-2])
-        y[mask_top] = fp[-1] + slope_top * (x[mask_top] - xp[-1])
-    
+        z_fit = z_model[-Nfit:]
+        rho_fit = rho_model[-Nfit:]
+        params, _ = curve_fit(rho_exp, z_fit, rho_fit, p0=[rho_fit[0], 8000.0])
+        y[mask_top] = rho_exp(avk_heights[mask_top], *params)
+
     return y
 
 
 def debug_plot_stepwise(
         z_model, cnc_model,
         z_interp, cnc_interp,
+        cnc_prior,
         avk, pid, timestamp,
         cnc_model_comp,     
         cnc_interp_comp,     
         comp_name,
-
+        x_retr_comp,
         outdir="debug_plots"
     ):
 
@@ -208,8 +248,9 @@ def debug_plot_stepwise(
     axs[0,0].set_xlabel("CO₂ (ppm)")
     axs[0,0].set_ylabel("z (m)")
 
-    axs[0,1].plot(cnc_interp, z_interp, 'b.-')
-    axs[0,1].set_title("Interpolated (TOTAL)")
+    axs[0,1].plot(cnc_interp, z_interp, 'b.-', label="Model interp")
+    axs[0,1].plot(cnc_prior,  z_interp, 'g.--', label="Prior")
+    axs[0,1].set_title("Interpolated ICON-ART(TOTAL) and Prior")
     axs[0,1].set_xlabel("CO₂ (ppm)")
     axs[0,1].set_ylabel("z (m)")
 
@@ -218,12 +259,12 @@ def debug_plot_stepwise(
     axs[0,2].set_xlabel("AK")
     axs[0,2].set_ylabel("z (m)")
 
-    contrib_total = cnc_interp * avk
+    contrib_total = cnc_prior + avk * (cnc_interp - cnc_prior)
     axs[0,3].scatter(contrib_total, z_interp, s=40)
     axs[0,3].set_title("Contribution (TOTAL)")
-    axs[0,3].set_xlabel("cnc * AK")
+    axs[0,3].set_xlabel("x̂ = xa + A(x-xa)")
     axs[0,3].legend([
-        f"XCO₂_total_model = Σ(cnc·AK) / Σ(AK) = {XCO2_mod_total:.2f} ppm"
+        f"XCO₂_total_model = Σa.m.(cnc_pr + AK(cnc_int - cnc_pr)) / Σ(a.m.)"
     ], loc="upper right")
 
     axs[1,0].plot(cnc_model_comp, z_model, '.-')
@@ -241,12 +282,12 @@ def debug_plot_stepwise(
     axs[1,2].set_xlabel("AK")
     axs[1,2].set_ylabel("z (m)")
 
-    contrib_comp = cnc_interp_comp * avk
-    axs[1,3].scatter(contrib_comp, z_interp, s=40)
-    axs[1,3].set_title(f"Contribution ({comp_name})")
-    axs[1,3].set_xlabel("cnc * AK")
+    
+    axs[1,3].plot(x_retr_comp, z_interp, 'm.-')
+    axs[1,3].set_title(f"Retrieved Profile ({comp_name})")
+    axs[1,3].set_xlabel("Retrieved CO₂ (ppm)")
     axs[1,3].legend([
-        f"XCO₂_({comp_name})_model = Σ(cnc·AK) / Σ(AK) = {XCO2_mod_comp:.2f} ppm"
+        f"XCO₂_({comp_name}) = {XCO2_mod_comp:.2f} ppm"
     ], loc="upper right")
 
     fig.suptitle(f"{pid} – {timestamp} – Component {comp_name}")
@@ -257,29 +298,93 @@ def debug_plot_stepwise(
     plt.close()
     print(fname)
 
+def debug_plot_rho(z_model, rho_model, z_interp, rho_interp, pid, timestamp, outdir="debug_plots"):
+    """
+    Debug plot for density profile: model vs interpolated/extrapolated
+    """
+    os.makedirs(outdir, exist_ok=True)
+    fig, ax = plt.subplots(figsize=(6, 10))
+    ax.plot(rho_model, z_model, 'k.-', label="Model rho")
+    ax.plot(rho_interp, z_interp, 'b.-', label="Interpolated/extrapolated rho")
+    ax.set_xlabel("Density (kg/m³)")
+    ax.set_ylabel("Height (m)")
+    ax.set_title(f"{pid} – {timestamp} – Density Profile")
+    ax.legend()
+    plt.tight_layout()
+    fname = os.path.join(outdir, f"debug_rho_{pid}_{timestamp}.png")
+    plt.savefig(fname)
+    plt.close()
+    print(fname)
+
+def l2_to_l1_filename(l2_path, l1_version=def_v1b):
+    """
+    Convert L2 EM27 filename to corresponding L1b filename.
+    """
+
+    # Replace directory
+    l1_path = l2_path.replace("/L2/", "/L1/")
+
+    # Replace file tag
+    l1_path = l1_path.replace("_L2_", "_L1b_")
+
+    # Replace version
+    l1_path = re.sub(r"_V\d{3}\.nc$", f"_{l1_version}.nc", l1_path)
+
+    return l1_path
+
+
+def apply_prior_ak_mass(cnc_vert_model, prior_profile, AK, rho, dz):
+
+    x_retr = prior_profile + AK * (cnc_vert_model - prior_profile)
+    w = rho * dz
+    return np.nansum(x_retr * w) / np.nansum(w)
+def apply_prior_ak_mass_component(cnc_vert_model, prior_profile, AK, fraction_prof, rho, dz):
+
+    x_retr = fraction_prof * (prior_profile + AK * (cnc_vert_model - prior_profile))
+    w = rho * dz
+    return np.nansum(x_retr * w) / np.nansum(w)
+
 
 def process_file_pair_full(file_pair, stations, min_nobs=7):
-    """
-    Process a single model-obs file pair and return a dict with:
-    - pid
-    - model_time
-    - XCO2_obs
-    - XCO2_mod
-    - XCO2_mod_no_extrap
-    - interpolated model components: TRCO2, BGCO2, RA, GPP
-    """
     
     model_file, obs_file = file_pair
-
+    
     pid = get_pid_from_filename(obs_file)
     if pid not in stations:
         print(f"Skipping {pid}: no valid Station info")
-        return None
+        return ("fail_no_station", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
     station = stations[pid]
     print('Processing', model_file, obs_file, pid)
     # Open datasets
     ds_mod = xr.open_dataset(model_file)
     ds_obs = xr.open_dataset(obs_file)
+    ds_obsl1 = xr.open_dataset(l2_to_l1_filename(obs_file, l1_version="V008"))
+
+    # ---------- Model time ----------
+    basename = os.path.basename(model_file)
+    m = re.search(r'_(\d{8}T\d{6})Z', basename)  # extract YYYYMMDDTHHMMSS
+    date_str = m.group(1)  # '20250325T170000'
+
+    # Parse into numpy.datetime64
+    model_time = np.datetime64(
+        f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}T{date_str[9:11]}:{date_str[11:13]}:{date_str[13:15]}"
+    )
+    time_window = np.timedelta64(30, 'm')
+    # ---------- Observations ----------
+    obs_in_window = ds_obs.sel(time=slice(model_time - time_window, model_time + time_window))
+    n_valid_obs = obs_in_window.XCO2.count(dim='time').values
+    if n_valid_obs<min_nobs:
+        return ("fail_too_few_obs", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
+    else:
+        XCO2_obs_avg = obs_in_window.XCO2.mean(dim='time', skipna=True).values
+        XCO2_prior = ds_obsl1.CO2_prior.values[0, :] * 1e6 # midday prior profile from L1b data, MAP files contain 3hr average
+    AVK_avg = obs_in_window.XCO2_AK.mean(dim='time', skipna=True).values
+    if np.isnan(station.topo_obs):
+            return ("fail_nan_topo", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
+    if np.any(np.isnan(AVK_avg)):
+            return ("fail_nan_avk", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
+    if np.any(np.isnan(XCO2_prior)):
+            return ("fail_nan_prior", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
 
     # ---------- Model CO2 ----------
     factor = 1e6*28.97/44.
@@ -300,106 +405,53 @@ def process_file_pair_full(file_pair, stations, min_nobs=7):
     cnc_hor_GPP = hor_interp(GPP_CO2, station)
     z_ifc_hor = hor_interp(z_ifc, station)
     mod_topo_hor = hor_interp(model_layers, station)
-
+    rho_hor = hor_interp(ds_mod.rho[0].values, station)
     print('Model topo', mod_topo_hor[-1], 'Observation topo ', station.topo_obs)
+
     # ---------- Vertical interpolation ----------
     avk_heights_total = station.avk_heights_m  - station.topo_obs#+ station.height_agl
+    if np.any(np.isnan(avk_heights_total)):
+            return ("fail_nan_heights", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
+
     # ---------- no extrapolation ----------
-    # cnc_vert = np.interp(avk_heights_total, z_ifc_hor[::-1], cnc_hor_total[::-1],
-    #                      left=np.nan, right=np.nan)
-    # cnc_vert_TR = np.interp(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR[::-1],
-    #                         left=np.nan, right=np.nan)
-    # cnc_vert_BG = np.interp(avk_heights_total, z_ifc_hor[::-1], cnc_hor_BG[::-1],
-    #                         left=np.nan, right=np.nan)
-    # cnc_vert_RA = np.interp(avk_heights_total, z_ifc_hor[::-1], cnc_hor_RA[::-1],
-    #                         left=np.nan, right=np.nan)
-    # cnc_vert_GPP = np.interp(avk_heights_total, z_ifc_hor[::-1], cnc_hor_GPP[::-1],
-    #                          left=np.nan, right=np.nan)
-    cnc_vert = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_total[::-1])
-    cnc_vert_TR = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR[::-1])
-    cnc_vert_BG = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR_BG[::-1])
-    cnc_vert_RA = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_RA[::-1])
-    cnc_vert_GPP = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_GPP[::-1])
+    cnc_vert = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_total[::-1], XCO2_prior)
+    cnc_vert_TR = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR[::-1], XCO2_prior, is_component=True)
+    #cnc_vert_BG = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_TR_BG[::-1], XCO2_prior)
+    cnc_vert_RA = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_RA[::-1], XCO2_prior, is_component=True)
+    cnc_vert_GPP = linear_extrapolate(avk_heights_total, z_ifc_hor[::-1], cnc_hor_GPP[::-1], XCO2_prior, is_component=True)
+    cnc_vert_BG = cnc_vert - cnc_vert_TR - cnc_vert_RA + cnc_vert_GPP
+    rho_vert = interp_rho_exp(avk_heights_total, z_ifc_hor[::-1], rho_hor[::-1])
 
-    # ---------- Model time ----------
-    basename = os.path.basename(model_file)
-    m = re.search(r'_(\d{8}T\d{6})Z', basename)  # extract YYYYMMDDTHHMMSS
-    date_str = m.group(1)  # '20250325T170000'
+    dz = np.diff(avk_heights_total, prepend=0.0)  # prepend surface height
+    # print('DZ values:', dz, 'avkh', avk_heights_total)
+    # ---------- OCO-2 style retrieval with prior ----------
+    XCO2_mod = apply_prior_ak_mass(cnc_vert, XCO2_prior, AVK_avg, rho_vert, dz)
 
-    # Parse into numpy.datetime64
-    model_time = np.datetime64(
-        f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}T{date_str[9:11]}:{date_str[11:13]}:{date_str[13:15]}"
-    )
-    time_window = np.timedelta64(30, 'm')
+    XCO2_mod_TR  = apply_prior_ak_mass_component(cnc_vert, XCO2_prior, AVK_avg, cnc_vert_TR  / cnc_vert,  rho_vert, dz)
+    XCO2_mod_BG  = apply_prior_ak_mass_component(cnc_vert, XCO2_prior, AVK_avg, cnc_vert_BG  / cnc_vert,  rho_vert, dz)
+    XCO2_mod_RA  = apply_prior_ak_mass_component(cnc_vert, XCO2_prior, AVK_avg, cnc_vert_RA  / cnc_vert,  rho_vert, dz)
+    XCO2_mod_GPP = apply_prior_ak_mass_component(cnc_vert, XCO2_prior, AVK_avg, cnc_vert_GPP  / cnc_vert, rho_vert, dz)
 
-    # ---------- Observations ----------
-    obs_in_window = ds_obs.sel(time=slice(model_time - time_window, model_time + time_window))
-    if len(obs_in_window.time)<min_nobs:
-        XCO2_obs_avg = np.nan
-    else:
-        XCO2_obs_avg = obs_in_window.XCO2.mean(dim='time').values
-    AVK_avg = obs_in_window.XCO2_AK.mean(dim='time').values
+    if np.isfinite(XCO2_mod) and XCO2_mod == 0.0:
 
-    # Vertical AVK-weighted
-    XCO2_mod = np.nansum(cnc_vert * AVK_avg) / np.sum(AVK_avg)
-    XCO2_mod_TR = np.nansum(cnc_vert_TR * AVK_avg) / np.sum(AVK_avg)
-    XCO2_mod_BG = np.nansum(cnc_vert_BG * AVK_avg) / np.sum(AVK_avg)
-    XCO2_mod_RA = np.nansum(cnc_vert_RA * AVK_avg) / np.sum(AVK_avg)
-    XCO2_mod_GPP = np.nansum(cnc_vert_GPP * AVK_avg) / np.sum(AVK_avg)
+        STATS["fail_zero_xco2"] += 1
+        DEBUG_FAIL["zero_xco2"].append((pid, model_file, obs_file))
 
-    # print("Model levels (z_ifc_hor):", z_ifc_hor[::-1])
-    # print("AVK heights total:", avk_heights_total)
-    # print("Model TR concentration:", cnc_hor_TR[::-1])
-    # print("Model interpolated TR concentration:", cnc_vert_TR)
-    # print('Avk heights', station.avk_heights_m)
-    # print('Avk agl', station.height_agl)
-
-    # if np.any(~np.isnan(XCO2_mod)):
-    #     debug_plot_stepwise(
-    #         z_model = z_ifc_hor[::-1],
-    #         cnc_model = cnc_hor_total[::-1],
-    #         z_interp = avk_heights_total,
-    #         cnc_interp = cnc_vert,
-    #         avk = AVK_avg,
-    #         pid = pid,
-    #         timestamp = str(model_time),
-
-    #         cnc_model_comp = cnc_hor_TR[::-1],
-    #         cnc_interp_comp = cnc_vert_TR,
-    #         comp_name = "Anthr"
-    #     )
-    #     debug_plot_stepwise(
-    #         z_model = z_ifc_hor[::-1],
-    #         cnc_model = cnc_hor_total[::-1],
-    #         z_interp = avk_heights_total,
-    #         cnc_interp = cnc_vert,
-    #         avk = AVK_avg,
-    #         pid = pid,
-    #         timestamp = str(model_time),
-
-    #         cnc_model_comp = cnc_hor_total[::-1],
-    #         cnc_interp_comp = cnc_vert,
-    #         comp_name = "Total"
-    #     )
-    #     debug_plot_stepwise(
-    #         z_model = z_ifc_hor[::-1],
-    #         cnc_model = cnc_hor_total[::-1],
-    #         z_interp = avk_heights_total,
-    #         cnc_interp = cnc_vert,
-    #         avk = AVK_avg,
-    #         pid = pid,
-    #         timestamp = str(model_time),
-
-    #         cnc_model_comp = cnc_hor_TR_BG [::-1],
-    #         cnc_interp_comp = cnc_vert_BG,
-    #         comp_name = "BG"
-    #     )
-
-
+        print("\n=== ZERO XCO2 DETECTED ===")
+        print("PID:", pid)
+        print("Model:", model_file)
+        print("Obs:", obs_file)
+        print("Time:", model_time)
+        print("AVK sum:", np.nansum(AVK_avg))
+        print("w sum:", np.nansum(rho_vert * dz))
+        print("dz min:", np.min(dz))
+        print("rho nan:", np.isnan(rho_vert).sum())
+        print("cnc min:", np.min(cnc_vert))
+        print("========================\n")
+        return ("fail_zero_xco2", {"pid": pid, "model_file": model_file, "obs_file": obs_file})
     # Close datasets
     ds_mod.close()
     ds_obs.close()
-
     return {
         'pid': pid,
         'time': model_time,
