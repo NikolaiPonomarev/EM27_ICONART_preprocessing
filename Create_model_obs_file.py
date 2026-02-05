@@ -12,7 +12,8 @@ import pandas as pd
 obs_dir = '/exports/geos.ed.ac.uk/palmer_group/managed/nponomar/edatmo/data-root/L2/by-product/EM27/total_column_qc/'
 model_dir = '/exports/geos.ed.ac.uk/palmer_group/nponomar/icon_runs/work/VPRM_EU_ERA5_22/202504_01_00_0_2183/icon/output/'
 grid_file = '/home/nponomar/icon_Edinburgh/icon_europe_DOM01.nc'
-default_obs_version = '*V014*'
+default_obs_version = '*V015*'
+def_v1b = "V008"
 outpath = '/exports/geos.ed.ac.uk/palmer_group/nponomar/EM27/EM27_ICONART_preprocessing/'
 # ---------- Load model grid ----------
 ds_grid = xr.open_dataset(grid_file)
@@ -163,9 +164,6 @@ for f in unique_obs_files:
     else:
         print(f"IGNORED STATION: {f}")
 
-DEBUG_PID = "JCMB_SN217"
-DEBUG_ONCE = True
-DEBUG_DONE = False
 
 def linear_extrapolate(x, xp, fp):
     """Interpolate with linear extrapolation at both ends using two nearest points."""
