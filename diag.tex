@@ -29,7 +29,7 @@
 % ---------- XCO2 computation cluster (D-F) ----------
 \matrix[column sep=1cm, below=2cm of Ccluster] (Xmatrix) {
   \node[step=purple] (D) {\shortstack[l]{Compute XCO\textsubscript{2,total}\\$\displaystyle \frac{\sum (\rho \, dz \,[X_\text{prior} + AK \cdot (X_\text{model}-X_\text{prior})])}{\sum (\rho \, dz)}$}}; &
-  \node[step=purple] (E) {\shortstack[l]{Compute layer fractions\\$\displaystyle f_\text{comp} = \frac{X_\text{comp}}{X_\text{total}}$}}; &
+  \node[step=purple] (E) {\shortstack[l]{Compute layer fractions\\$\displaystyle f_\text{comp} = \frac{CO_\text{2,comp}}{CO_\text{2,total}}$}}; &
   \node[step=purple] (F) {\shortstack[l]{Compute XCO\textsubscript{2,components}\\$\displaystyle \frac{\sum (\rho \, dz \, f_\text{comp} \,[X_\text{prior} + AK \cdot (X_\text{total}-X_\text{prior})])}{\sum (\rho \, dz)}$}}; \\
 };
 
@@ -42,6 +42,7 @@
 \draw[arrow] (A) -- (B);
 \draw[arrow] (B.south) -- (Ccluster.north);
 \draw[arrow] (Ccluster.south) -- (Xcluster.north);
+\draw[arrow] (E.east) -- (F.west);
 \draw[arrow] (Xcluster.south) -- (G.north);
 
 \end{tikzpicture}
