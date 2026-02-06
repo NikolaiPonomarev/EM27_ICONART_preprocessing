@@ -14,7 +14,7 @@
 
 % ---------- Top workflow ----------
 \node[step=gray] (A) {\shortstack[l]{A) Input:\\- Hourly Model file \\- Obs files: L2 + L1b (prior)}}; 
-\node[step=green, below=of A] (B) {\shortstack[l]{B) Horizontal IDW (5 grid cells) to station location:\\-Dry CO\textsubscript{2} and components: Anthr, BG, RA, GPP\\- Dry Air density $\rho$}}; 
+\node[step=green, below=of A] (B) {\shortstack[l]{B) Horizontal IDW (5 grid cells) to station location:\\-Dry CO\textsubscript{2} and components: Anthr, BG, RA, GPP\\-Dry Air density $\rho$}}; 
 
 % ---------- Vertical Interpolation Cluster (C) ----------
 \matrix[column sep=1.5cm, row sep=0cm, below=2cm of B] (Cmatrix) {
